@@ -12,6 +12,8 @@
 # ...e por fim: zipar_shapefiles('nome')
 
 import os
+import glob
+import zipfile
 from qgis.core import (QgsProject, QgsVectorLayer, QgsFeature, QgsField,
                        QgsGeometry, QgsFeatureRequest, QgsWkbTypes,
                        QgsDistanceArea, QgsCoordinateReferenceSystem,
@@ -338,3 +340,68 @@ def preparar_para_zip(nome, base_dir=BASE_DIR):
     if iface:
         iface.mapCanvas().refresh()
     print('=== Pronto. Confira no mapa e rode zipar_shapefiles(nome). ===')
+
+
+# =====================================================================
+# 5) Zipar: 1 .zip por shapefile (com todos os arquivos-irmãos)
+# =====================================================================
+def zipar_shapefiles(nome, base_dir=BASE_DIR, subpasta='zip',
+                     incluir_vazios=False, atualizar_qml=True, preparar=False):
+    """Gera 1 .zip por shapefile, empacotando todos os arquivos de mesmo
+    nome-base (shp, shx, dbf, prj, cpg, qml...). Por padrão:
+      - pula camadas sem feição (incluir_vazios=True inclui todas);
+      - salva os zips em <pasta>/zip/ (subpasta=None -> na própria pasta);
+      - regrava o .qml com o estilo atual da camada carregada no projeto.
+    preparar=True roda antes: clip_hidro + remanescente + dissolver + área."""
+    pasta = os.path.join(base_dir, nome)
+    if not os.path.isdir(pasta):
+        print(f'  ERRO: pasta não encontrada: {pasta}')
+        return
+
+    if preparar:
+        preparar_para_zip(nome, base_dir=base_dir)
+
+    saida = os.path.join(pasta, subpasta) if subpasta else pasta
+    os.makedirs(saida, exist_ok=True)
+    no_projeto = set(QgsProject.instance().mapLayers().values())
+
+    print(f'Zipando shapefiles — {pasta}')
+    feitos = 0
+    for camada in LAYERS:
+        shp = os.path.join(pasta, camada + '.shp')
+        if not os.path.exists(shp):
+            continue
+
+        layer, _ = _camada_shp(pasta, camada)
+
+        # pula vazios (opcional)
+        if not incluir_vazios and layer is not None and layer.featureCount() == 0:
+            print(f'  {camada:24s} vazio — pulado')
+            continue
+
+        # regrava o .qml com o estilo atual — só se a camada veio do projeto
+        # (evita sobrescrever o estilo com o padrão de uma carga do disco)
+        if atualizar_qml and layer is not None and layer in no_projeto:
+            try:
+                layer.saveNamedStyle(os.path.join(pasta, camada + '.qml'))
+            except Exception as e:
+                print(f'  ({camada}: .qml não atualizado: {e})')
+
+        # coleta todos os arquivos-irmãos (mesmo nome-base), menos .zip
+        irmaos = [p for p in glob.glob(os.path.join(pasta, camada + '.*'))
+                  if not p.lower().endswith('.zip')]
+        if not irmaos:
+            print(f'  {camada:24s} sem arquivos — pulado')
+            continue
+
+        with zipfile.ZipFile(os.path.join(saida, camada + '.zip'),
+                             'w', zipfile.ZIP_DEFLATED) as z:
+            for arq in irmaos:
+                z.write(arq, arcname=os.path.basename(arq))  # zip "achatado"
+
+        exts = ', '.join(sorted(os.path.splitext(a)[1] for a in irmaos))
+        print(f'  {camada:24s} -> {camada}.zip  ({exts})')
+        feitos += 1
+
+    print(f'\n{feitos} zip(s) em:\n  {saida}')
+    return saida
